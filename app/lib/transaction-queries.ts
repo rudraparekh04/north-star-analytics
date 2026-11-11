@@ -16,6 +16,7 @@ import {
 } from "@/app/types/dashboard";
 
 export { orderStatuses, transactionSortFields, transactionStatuses };
+export type { TransactionSortField };
 export type SortDirection = "asc" | "desc";
 
 export interface TransactionPage {
