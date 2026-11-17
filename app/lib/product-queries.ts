@@ -35,6 +35,29 @@ export interface InventoryMovement {
   occurredAt: string;
 }
 
+export interface OrderProductOption {
+  id: string;
+  name: string;
+  category: string;
+  unitPrice: number;
+  stockQuantity: number;
+}
+
+export async function getOrderProductOptions(organizationId: string): Promise<OrderProductOption[]> {
+  await ensureTransactionSeedData(organizationId);
+  const result = await getPostgresPool().query<OrderProductOption>(
+    `SELECT p.id, p.name, c.name AS category,
+       p.unit_price::float8 AS "unitPrice", p.stock_quantity AS "stockQuantity"
+     FROM dashboard_products p
+     JOIN dashboard_product_categories c
+       ON c.id = p.category_id AND c.organization_id = p.organization_id
+     WHERE p.organization_id = $1 AND p.archived_at IS NULL AND c.archived_at IS NULL
+     ORDER BY p.name`,
+    [organizationId],
+  );
+  return result.rows;
+}
+
 export async function getProductCatalog(organizationId: string) {
   await ensureTransactionSeedData(organizationId);
   const pool = getPostgresPool();

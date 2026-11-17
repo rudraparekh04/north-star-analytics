@@ -8,7 +8,7 @@ import { orderStatuses } from "@/app/types/dashboard";
 
 interface OrderDetailPageProps {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ updated?: string; error?: string }>;
+  searchParams: Promise<{ updated?: string; created?: string; error?: string }>;
 }
 
 const currency = new Intl.NumberFormat("en-US", {
@@ -53,6 +53,11 @@ export default async function OrderDetailPage({
         {query.updated && (
           <p role="status" className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             Order status updated.
+          </p>
+        )}
+        {query.created && (
+          <p role="status" className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            Order created successfully.
           </p>
         )}
         {query.error === "stock" && (

@@ -284,9 +284,11 @@ export async function getDashboardAnalytics(
   const previousEndDate = addMonths(endDate, -1);
   const totalsQuery = `
     SELECT
-      COUNT(*)::text AS orders,
-      COUNT(*) FILTER (WHERE status = 'Paid')::text AS paid_orders,
-      COUNT(DISTINCT lower(email)) FILTER (WHERE status = 'Paid')::text AS active_customers,
+      COUNT(*) FILTER (WHERE order_status <> 'Cancelled')::text AS orders,
+      COUNT(*) FILTER (WHERE status = 'Paid' AND order_status <> 'Cancelled')::text AS paid_orders,
+      COUNT(DISTINCT lower(email)) FILTER (
+        WHERE status = 'Paid' AND order_status <> 'Cancelled'
+      )::text AS active_customers,
       COALESCE(SUM(CASE
         WHEN status = 'Paid' THEN amount
         WHEN status = 'Refunded' THEN -amount
@@ -371,7 +373,7 @@ export async function getDashboardAnalytics(
     endDate,
     metrics: [
       makeMetric("Revenue", currentRevenue, previousRevenue, formatCurrency),
-      makeMetric("Total orders", currentOrders, previousOrders, (value) => Math.round(value).toLocaleString()),
+      makeMetric("Orders (not cancelled)", currentOrders, previousOrders, (value) => Math.round(value).toLocaleString()),
       makeMetric("Active customers", currentCustomers, previousCustomers, (value) => Math.round(value).toLocaleString()),
       makeMetric("Average order value", currentAverageOrder, previousAverageOrder, formatCurrency),
     ],

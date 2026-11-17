@@ -1,11 +1,18 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { PoolClient } from "pg";
 import { requireOrganizationSession } from "@/app/lib/auth";
 import { getPostgresPool } from "@/app/lib/database";
-import { orderStatuses, type OrderStatus } from "@/app/types/dashboard";
+import { ensureAppSchema } from "@/app/lib/schema";
+import {
+  orderStatuses,
+  transactionStatuses,
+  type OrderStatus,
+  type TransactionStatus,
+} from "@/app/types/dashboard";
 
 function isOrderStatus(value: FormDataEntryValue | null): value is OrderStatus {
   return typeof value === "string" && orderStatuses.some((status) => status === value);
@@ -28,6 +35,121 @@ function revalidateOrderViews(orderIds: string[], customerIds: (string | null)[]
   for (const customerId of new Set(customerIds.filter((id): id is string => id !== null))) {
     revalidatePath(`/customers/${customerId}`, "page");
   }
+}
+
+function formString(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isTransactionStatus(value: string): value is TransactionStatus {
+  return transactionStatuses.some((status) => status === value);
+}
+
+function isValidDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+export async function createOrderAction(formData: FormData) {
+  const session = await requireOrderEditor();
+  const customerName = formString(formData, "customerName");
+  const customerEmail = formString(formData, "customerEmail").toLowerCase();
+  const productId = formString(formData, "productId");
+  const amountValue = formString(formData, "amount");
+  const paymentStatus = formString(formData, "paymentStatus");
+  const transactionDate = formString(formData, "transactionDate");
+  const region = formString(formData, "region") || "Unassigned";
+
+  if (
+    customerName.length < 2 || customerName.length > 100 ||
+    customerEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) ||
+    !/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(productId) ||
+    !/^\d+(?:\.\d{1,2})?$/.test(amountValue) ||
+    !isTransactionStatus(paymentStatus) || !isValidDate(transactionDate) ||
+    region.length > 100
+  ) redirect("/orders?error=order-invalid");
+
+  const amount = Number(amountValue);
+  if (!Number.isFinite(amount) || amount > 9_999_999_999.99) {
+    redirect("/orders?error=order-invalid");
+  }
+
+  await ensureAppSchema();
+  const client = await getPostgresPool().connect();
+  const orderId = `ORD-${randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+  let customerId: string | undefined;
+  let error: "product" | undefined;
+  try {
+    await client.query("BEGIN");
+    const productResult = await client.query<{
+      name: string;
+      category: string;
+    }>(
+      `SELECT p.name, c.name AS category
+       FROM dashboard_products p
+       JOIN dashboard_product_categories c
+         ON c.id = p.category_id AND c.organization_id = p.organization_id
+       WHERE p.organization_id = $1 AND p.id = $2
+         AND p.archived_at IS NULL AND c.archived_at IS NULL
+       FOR UPDATE OF p`,
+      [session.organization.id, productId],
+    );
+    const product = productResult.rows[0];
+    if (!product) {
+      error = "product";
+      await client.query("ROLLBACK");
+    } else {
+      const customerResult = await client.query<{ id: string }>(
+        `INSERT INTO dashboard_customers (organization_id, full_name, email)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (organization_id, lower(email))
+         DO UPDATE SET updated_at = now()
+         RETURNING id`,
+        [session.organization.id, customerName, customerEmail],
+      );
+      customerId = customerResult.rows[0]?.id;
+      if (!customerId) throw new Error("The customer record could not be created for this order.");
+
+      await client.query(
+        `INSERT INTO dashboard_transactions
+           (organization_id, id, customer, email, product, transaction_date, amount,
+            status, order_status, category, region, customer_id, product_id, inventory_deducted)
+         VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, 'Processing', $9, $10, $11, $12, false)`,
+        [
+          session.organization.id,
+          orderId,
+          customerName,
+          customerEmail,
+          product.name,
+          transactionDate,
+          amount,
+          paymentStatus,
+          product.category,
+          region,
+          customerId,
+          productId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO dashboard_customer_activity
+           (organization_id, customer_id, event_type, description, related_order_id)
+         VALUES ($1, $2, 'order_placed', $3, $4)`,
+        [session.organization.id, customerId, `Order ${orderId} placed`, orderId],
+      );
+      await client.query("COMMIT");
+    }
+  } catch (caughtError) {
+    await client.query("ROLLBACK");
+    throw caughtError;
+  } finally {
+    client.release();
+  }
+
+  if (error) redirect("/orders?error=product");
+  revalidateOrderViews([orderId], [customerId ?? null]);
+  redirect(`/orders/${encodeURIComponent(orderId)}?created=1`);
 }
 
 interface LockedOrder {
